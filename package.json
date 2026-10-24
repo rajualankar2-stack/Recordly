@@ -46,7 +46,9 @@
 		"test:watch": "vitest",
 		"typecheck": "tsc --noEmit",
 		"test:ui": "playwright test",
-		"dev:ui": "vite --mode ui --host 127.0.0.1"
+		"dev:ui": "vite --mode ui --host 127.0.0.1",
+		"record": "node cli/record.mjs",
+		"record:mac": "node cli/record.mjs"
 	},
 	"dependencies": {
 		"@phosphor-icons/react": "^2.1.10",
@@ -102,5 +104,8 @@
 		"vitest": "^3.2.7",
 		"web-demuxer": "^4.0.0"
 	},
-	"main": "dist-electron/main.cjs"
+	"main": "dist-electron/main.cjs",
+	"bin": {
+		"recordly": "./cli/record.mjs"
+	}
 }
