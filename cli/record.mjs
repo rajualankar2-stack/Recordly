@@ -298,7 +298,10 @@ function finish() {
     runPostProcess()
       .then(() => {
         if (!opts.keepRaw) fs.rmSync(capturePath, { force: true });
-        fs.rmSync(cursorPath, { force: true });
+        if (!opts.keepRaw) {
+          fs.rmSync(cursorPath, { force: true });
+          fs.rmSync(clickPath, { force: true });
+        }
         console.log(`Final: ${outputPath}`);
         if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
