@@ -69,7 +69,7 @@ for i in range(1, len(xs)):
     speeds[i] = np.hypot(xs[i]-xs[i-1], ys[i]-ys[i-1]) / dt
 speeds_s = ema(speeds, 0.15)
 
-thr = float(np.percentile(speeds_s, 70))
+thr = float(np.percentile(speeds_s, 80))
 click_times = [c['t'] for c in clicks]
 
 # State
@@ -80,7 +80,7 @@ target_cx = W / 2.0
 target_cy = H / 2.0
 target_zoom = 1.0
 last_active = 0.0
-DWELL = 1.5
+DWELL = 2.0
 
 def cursor_at(t):
     x = float(np.interp(t, ts, xs_s)) * scale
@@ -118,12 +118,12 @@ while True:
         if t - last_active > DWELL:
             target_zoom = 1.0
 
-    zoom_level += (target_zoom - zoom_level) * 0.06
-    center_x += (target_cx - center_x) * 0.10
-    center_y += (target_cy - center_y) * 0.10
+    zoom_level += (target_zoom - zoom_level) * 0.03
+    center_x += (target_cx - center_x) * 0.06
+    center_y += (target_cy - center_y) * 0.06
     if zoom_level < 1.05:
-        center_x += (W/2 - center_x) * 0.12
-        center_y += (H/2 - center_y) * 0.12
+        center_x += (W/2 - center_x) * 0.08
+        center_y += (H/2 - center_y) * 0.08
 
     cz = max(1.0, zoom_level)
     cw = int(W / cz)
