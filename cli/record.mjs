@@ -29,6 +29,7 @@ const opts = {
   duration: null,
   display: null,
   window: null,
+  windowName: null,
   fps: 60,
   systemAudio: false,
   mic: false,
@@ -40,6 +41,8 @@ const opts = {
   redact: null,
   autoRedact: false,
   autoRedactAll: false,
+  trimSilence: false,
+  printMedia: false,
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -49,6 +52,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '-d' || a === '--duration') opts.duration = Number(args[++i]);
   else if (a === '--display') opts.display = args[++i];
   else if (a === '--window') opts.window = args[++i];
+  else if (a === '--window-name') opts.windowName = args[++i];
   else if (a === '--fps') opts.fps = Number(args[++i]);
   else if (a === '--system-audio') opts.systemAudio = true;
   else if (a === '--mic') opts.mic = true;
@@ -58,6 +62,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--redact') opts.redact = args[++i];
   else if (a === '--auto-redact') opts.autoRedact = true;
   else if (a === '--auto-redact-all') opts.autoRedactAll = true;
+  else if (a === '--trim-silence') opts.trimSilence = true;
+  else if (a === '--print-media') opts.printMedia = true;
   else if (a === '--open') opts.open = true;
   else if (a === '--keep-raw') opts.keepRaw = true;
   else if (a === 'record') {
@@ -81,14 +87,33 @@ Options:
   --system-audio          Capture system audio (macOS)
   --mic                   Capture microphone (macOS)
   --window <id>           Capture a window by id instead of a display
+  --window-name <name>    Resolve window by name (macOS)
   --redact <regions>      Blur regions "x,y,w,h" (semicolon for multiple)
   --auto-redact           Auto-detect sensitive text (emails, phones) and blur
   --auto-redact-all       Auto-detect and blur ALL text regions
+  --trim-silence          Trim leading/trailing silence (requires audio)
   -h, --help              Show help
 `);
   process.exit(0);
 }
 
+// Resolve --window-name to --window id
+if (opts.windowName) {
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const helper = path.join(repoRoot, 'electron', 'native', 'bin',
+    process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64', 'openscreen-window-list');
+  try {
+    const out = execFileSync(helper, { encoding: 'utf8' });
+    const wins = JSON.parse(out);
+    const q = opts.windowName.toLowerCase();
+    const match = wins.find(w => (w.name || '').toLowerCase().includes(q) || (w.windowTitle || '').toLowerCase().includes(q));
+    if (!match) { console.error(`No window matching "${opts.windowName}"`); process.exit(1); }
+    opts.window = match.id.split(':')[1];
+  } catch (e) {
+    console.error('Failed to list windows:', e.message);
+    process.exit(1);
+  }
+}
 const timestamp = Date.now();
 const outputPath = opts.output
   ? path.resolve(opts.output)
@@ -300,6 +325,50 @@ function runPostProcess() {
   });
 }
 
+function trimSilenceFile(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = ffmpegPath();
+    // check for audio stream
+    const probeA = spawnSync(ffmpeg, ['-i', inputPath], { encoding: 'utf8' });
+    if (!/Audio:/i.test(probeA.stderr || '')) { resolve(); return; } // no audio -> skip
+    // detect silence
+    const r = spawnSync(ffmpeg, ['-i', inputPath, '-af', 'silencedetect=noise=-30dB:d=0.5', '-f', 'null', '-'],
+      { encoding: 'utf8', maxBuffer: 10*1024*1024 });
+    const out = (r.stderr || '') + (r.stdout || '');
+    const starts = [...out.matchAll(/silence_start:\s*([\d.]+)/g)].map(m => parseFloat(m[1]));
+    const ends = [...out.matchAll(/silence_end:\s*([\d.]+)/g)].map(m => parseFloat(m[1]));
+    // leading silence: if first silence starts at ~0
+    let start = 0;
+    let doTrim = false;
+    if (starts.length && starts[0] < 0.1) { start = ends[0] || 0; doTrim = true; }
+    // trailing silence: if last silence end ~ duration
+    let probe = spawnSync(ffmpeg, ['-i', inputPath], { encoding: 'utf8' });
+    const durMatch = (probe.stderr || '').match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
+    let duration = 0;
+    if (durMatch) duration = parseInt(durMatch[1])*3600 + parseInt(durMatch[2])*60 + parseFloat(durMatch[3]);
+    let end = duration;
+    if (starts.length && ends.length) {
+      const lastStart = starts[starts.length-1];
+      const lastEnd = ends[ends.length-1];
+      if (lastEnd >= duration - 0.5) { end = lastStart; doTrim = true; }
+    }
+    if (!doTrim || end - start < 1) { resolve(); return; } // nothing to trim
+    // trim
+    const tmp = outputPath + '.trimmed.mp4';
+    const rr = spawnSync(ffmpeg, ['-y', '-ss', String(start), '-to', String(end), '-i', inputPath,
+      '-c', 'copy', tmp], { stdio: 'pipe' });
+    if (rr.status === 0 && fs.existsSync(tmp)) {
+      fs.rmSync(inputPath, { force: true });
+      fs.renameSync(tmp, outputPath);
+      console.log(`Trimmed silence: ${start.toFixed(2)}s -> ${end.toFixed(2)}s`);
+      resolve();
+    } else {
+      console.error('Trim failed:', rr.stderr?.toString?.() || '');
+      reject(new Error('trim failed'));
+    }
+  });
+}
+
 function finish() {
   if (needsPost) {
     runPostProcess()
@@ -309,7 +378,11 @@ function finish() {
           fs.rmSync(cursorPath, { force: true });
           fs.rmSync(clickPath, { force: true });
         }
+        if (opts.trimSilence) return trimSilenceFile(outputPath, outputPath);
+      })
+      .then(() => {
         console.log(`Final: ${outputPath}`);
+        if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
         if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
       })
@@ -318,9 +391,19 @@ function finish() {
         process.exit(1);
       });
   } else {
-    console.log(`Final: ${outputPath}`);
-    if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
-    process.exit(0);
+    if (opts.trimSilence) {
+      trimSilenceFile(outputPath, outputPath).then(() => {
+        console.log(`Final: ${outputPath}`);
+        if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
+        if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
+        process.exit(0);
+      }).catch((e) => { console.error(e.message); process.exit(1); });
+    } else {
+      console.log(`Final: ${outputPath}`);
+      if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
+      if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
+      process.exit(0);
+    }
   }
 }
 

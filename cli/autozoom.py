@@ -6,6 +6,7 @@ holds while active, pans to new areas, and eases back to 1x when idle.
 """
 import sys, json, subprocess, time, os
 import numpy as np
+_start_time = time.time()
 from PIL import Image, ImageDraw, ImageFilter
 
 inp = sys.argv[1]
@@ -136,6 +137,15 @@ fr = info['r_frame_rate']
 num, den = fr.split('/')
 fps = float(num) / float(den)
 
+# estimate total frames for ETA
+try:
+    p2 = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration',
+        '-of','json',inp], capture_output=True, text=True, check=True)
+    _dur = float(json.loads(p2.stdout)['format']['duration'])
+    est_total = int(_dur * fps)
+except Exception:
+    est_total = 0
+
 logical_w = 1280.0
 scale = W / logical_w
 
@@ -248,7 +258,13 @@ while True:
     enc.stdin.write(out_img.tobytes())
     i += 1
     if i % 60 == 0:
-        print(f"processed {i} frames", flush=True)
+        elapsed = time.time() - _start_time
+        rate = i / elapsed if elapsed > 0 else 0
+        if est_total > 0 and rate > 0:
+            remaining = (est_total - i) / rate
+            print(f"processed {i}/{est_total} frames (ETA {remaining:.0f}s)", flush=True)
+        else:
+            print(f"processed {i} frames", flush=True)
 
 dec.stdout.close()
 dec.wait()
