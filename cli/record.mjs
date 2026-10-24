@@ -38,6 +38,8 @@ const opts = {
   autoZoom: null,
   keepRaw: false,
   redact: null,
+  autoRedact: false,
+  autoRedactAll: false,
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -54,6 +56,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--auto-zoom') opts.autoZoom = Number(args[++i]);
   else if (a === '--crop') opts.crop = args[++i];
   else if (a === '--redact') opts.redact = args[++i];
+  else if (a === '--auto-redact') opts.autoRedact = true;
+  else if (a === '--auto-redact-all') opts.autoRedactAll = true;
   else if (a === '--open') opts.open = true;
   else if (a === '--keep-raw') opts.keepRaw = true;
   else if (a === 'record') {
@@ -78,6 +82,8 @@ Options:
   --mic                   Capture microphone (macOS)
   --window <id>           Capture a window by id instead of a display
   --redact <regions>      Blur regions "x,y,w,h" (semicolon for multiple)
+  --auto-redact           Auto-detect sensitive text (emails, phones) and blur
+  --auto-redact-all       Auto-detect and blur ALL text regions
   -h, --help              Show help
 `);
   process.exit(0);
@@ -90,7 +96,7 @@ const outputPath = opts.output
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop || (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact;
+const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop || (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || opts.autoRedact || opts.autoRedactAll;
 const capturePath = needsPost
   ? path.join(path.dirname(outputPath), `.raw-${timestamp}.mp4`)
   : outputPath;
@@ -256,13 +262,14 @@ function recordFfmpeg() {
 }
 
 function runPostProcess() {
-  const useAutozoom = (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact;
+  const useAutozoom = (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || opts.autoRedact || opts.autoRedactAll;
   if (useAutozoom) {
     return new Promise((resolve, reject) => {
       const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'autozoom.py');
       const zoomVal = (opts.autoZoom && opts.autoZoom > 1) ? opts.autoZoom : (opts.zoom && opts.zoom > 1 ? opts.zoom : 1);
       const args = [script, capturePath, cursorPath, clickPath, String(zoomVal), outputPath];
-      if (opts.redact) args.push(opts.redact);
+      if (opts.redact) args.push(opts.redact); else args.push('');
+      args.push(opts.autoRedactAll ? 'all' : (opts.autoRedact ? 'sensitive' : ''));
       const p = spawn('python3', args, { stdio: 'inherit' });
       p.on('exit', (code) => {
         if (code === 0) resolve();

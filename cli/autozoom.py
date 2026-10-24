@@ -14,8 +14,80 @@ click_path = sys.argv[3]
 zoom = float(sys.argv[4])
 outp = sys.argv[5]
 redact_str = sys.argv[6] if len(sys.argv) > 6 else None
+auto_mode = sys.argv[7] if len(sys.argv) > 7 else ''
+if redact_str == '':
+    redact_str = None
 
 redact_regions = []
+
+# Auto-redact: detect text regions via OCR on sampled frames
+if auto_mode in ('sensitive', 'all'):
+    import re, tempfile
+    # probe duration
+    probe2 = subprocess.run(['ffprobe','-v','error','-select_streams','v:0',
+        '-show_entries','stream=duration','-of','json',inp], capture_output=True, text=True)
+    try:
+        dur = float(json.loads(probe2.stdout)['streams'][0]['duration'])
+    except Exception:
+        dur = 10.0
+    sample_times = sorted(set([0.0, dur/2.0, max(0.0, dur-1.0)]))
+    email_re = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+    phone_re = re.compile(r'(\+?\d[\d\s\-()]{7,}\d)')
+    card_re = re.compile(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b')
+    boxes = []
+    for t in sample_times:
+        tmp = tempfile.mktemp(suffix='.png')
+        subprocess.run(['ffmpeg','-y','-ss',str(t),'-i',inp,'-vframes','1',tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if not os.path.exists(tmp):
+            continue
+        r = subprocess.run(['tesseract',tmp,'stdout','tsv'], capture_output=True, text=True)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        for line in r.stdout.splitlines()[1:]:
+            cols = line.split('\t')
+            if len(cols) < 12:
+                continue
+            try:
+                left = int(cols[6]); top = int(cols[7]); w = int(cols[8]); h = int(cols[9])
+                conf = float(cols[10]); text = cols[11].strip()
+            except ValueError:
+                continue
+            if w <= 0 or h <= 0 or conf < 30:
+                continue
+            keep = False
+            if auto_mode == 'all':
+                keep = True
+            else:
+                if email_re.search(text) or phone_re.search(text) or card_re.search(text):
+                    keep = True
+            if keep:
+                pad = 8
+                boxes.append((max(0,left-pad), max(0,top-pad), w+2*pad, h+2*pad))
+    # merge overlapping boxes
+    merged = []
+    for b in boxes:
+        (x,y,w,h) = b
+        merged_into = False
+        for i,m in enumerate(merged):
+            (mx,my,mw,mh) = m
+            # overlap check
+            if not (x > mx+mw or x+w < mx or y > my+mh or y+h < my):
+                # merge
+                nx = min(x, mx); ny = min(y, my)
+                nw = max(x+w, mx+mw) - nx
+                nh = max(y+h, my+mh) - ny
+                merged[i] = (nx, ny, nw, nh)
+                merged_into = True
+                break
+        if not merged_into:
+            merged.append(b)
+    for (x,y,w,h) in merged:
+        redact_regions.append([x, y, w, h])
+    print(f"auto-redact: detected {len(merged)} regions", flush=True)
+
 if redact_str:
     for part in redact_str.split(';'):
         part = part.strip()
