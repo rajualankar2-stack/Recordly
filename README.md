@@ -365,6 +365,7 @@ Options:
 
 Post-processing (ffmpeg):
 - `--zoom <factor>` — center zoom (e.g. 2.0)
+- `--auto-zoom <factor>` — cursor-following zoom (e.g. 2.5)
 - `--crop x,y,w,h` — crop region
 - `--keep-raw` — keep unprocessed capture
 - `--open` — open final file when done

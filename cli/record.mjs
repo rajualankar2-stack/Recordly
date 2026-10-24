@@ -35,6 +35,7 @@ const opts = {
   zoom: null,
   crop: null,
   open: false,
+  autoZoom: null,
   keepRaw: false,
 };
 
@@ -49,6 +50,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--system-audio') opts.systemAudio = true;
   else if (a === '--mic') opts.mic = true;
   else if (a === '--zoom') opts.zoom = Number(args[++i]);
+  else if (a === '--auto-zoom') opts.autoZoom = Number(args[++i]);
   else if (a === '--crop') opts.crop = args[++i];
   else if (a === '--open') opts.open = true;
   else if (a === '--keep-raw') opts.keepRaw = true;
@@ -85,10 +87,11 @@ const outputPath = opts.output
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop;
+const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop || (opts.autoZoom && opts.autoZoom > 1);
 const capturePath = needsPost
   ? path.join(path.dirname(outputPath), `.raw-${timestamp}.mp4`)
   : outputPath;
+const cursorPath = path.join(path.dirname(outputPath), `.cursor-${timestamp}.jsonl`);
 
 function helperPath() {
   if (process.env.RECORDLY_HELPER) return process.env.RECORDLY_HELPER;
@@ -139,6 +142,13 @@ function recordMac() {
   console.log(`Recording to ${capturePath}`);
   console.log('Press Ctrl+C to stop' + (opts.duration ? ` (or wait ${opts.duration}s)` : '') + '.');
 
+  // Start cursor logger if auto-zoom requested
+  let cursorProc = null;
+  if (opts.autoZoom && opts.autoZoom > 1) {
+    const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'cursor-log.py');
+    cursorProc = spawn('python3', [script, cursorPath], { stdio: 'ignore' });
+  }
+
   const p = spawn(hp, [cfg], { stdio: ['pipe', 'pipe', 'pipe'] });
   let buf = '';
   let started = false;
@@ -172,6 +182,7 @@ function recordMac() {
   p.on('exit', (code) => {
     const m = buf.match(/Recording stopped\. Output path: (.+)/);
     const finalPath = m ? m[1].trim() : capturePath;
+    if (cursorProc) { try { cursorProc.kill(); } catch {} }
     if (code === 0) {
       console.log(`\nSaved: ${finalPath}`);
     } else {
@@ -215,6 +226,16 @@ function recordFfmpeg() {
 }
 
 function runPostProcess() {
+  if (opts.autoZoom && opts.autoZoom > 1) {
+    return new Promise((resolve, reject) => {
+      const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'autozoom.py');
+      const p = spawn('python3', [script, capturePath, cursorPath, String(opts.autoZoom), outputPath], { stdio: 'inherit' });
+      p.on('exit', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`autozoom failed (exit ${code})`));
+      });
+    });
+  }
   return new Promise((resolve, reject) => {
     const ffmpeg = ffmpegPath();
     const filters = [];
@@ -243,6 +264,7 @@ function finish() {
     runPostProcess()
       .then(() => {
         if (!opts.keepRaw) fs.rmSync(capturePath, { force: true });
+        fs.rmSync(cursorPath, { force: true });
         console.log(`Final: ${outputPath}`);
         if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
