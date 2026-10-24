@@ -2,12 +2,13 @@
 """Cursor-following auto-zoom post-processor for Recordly CLI recordings."""
 import sys, json, subprocess, time, os
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 inp = sys.argv[1]
 cursor_path = sys.argv[2]
-zoom = float(sys.argv[3])
-outp = sys.argv[4]
+click_path = sys.argv[3]
+zoom = float(sys.argv[4])
+outp = sys.argv[5]
 
 # Load cursor samples
 samples = []
@@ -16,6 +17,15 @@ with open(cursor_path) as f:
         line = line.strip()
         if line:
             samples.append(json.loads(line))
+# Load clicks
+clicks = []
+if os.path.exists(click_path):
+    with open(click_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                clicks.append(json.loads(line))
+
 if not samples:
     print("No cursor samples; copying input")
     subprocess.run(['ffmpeg','-y','-i',inp,'-c','copy',outp], check=True)
@@ -112,6 +122,19 @@ while True:
     top = max(0, min(H - ch, top))
     crop = img.crop((left, top, left + cw, top + ch))
     out_img = crop.resize((W, H), Image.LANCZOS)
+    # Draw click ripples
+    if clicks:
+        overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        for c in clicks:
+            age = t - c['t']
+            if 0 <= age <= 0.5:
+                kx = (c['x'] * scale - left) * (W / cw)
+                ky = (c['y'] * scale - top) * (H / ch)
+                r = int(8 + age * 80)
+                a = int(220 * (1 - age / 0.5))
+                od.ellipse((kx - r, ky - r, kx + r, ky + r), outline=(255, 60, 60, a), width=3)
+        out_img = Image.alpha_composite(out_img.convert('RGBA'), overlay).convert('RGB')
     enc.stdin.write(out_img.tobytes())
     i += 1
     if i % 60 == 0:

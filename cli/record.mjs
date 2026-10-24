@@ -92,6 +92,7 @@ const capturePath = needsPost
   ? path.join(path.dirname(outputPath), `.raw-${timestamp}.mp4`)
   : outputPath;
 const cursorPath = path.join(path.dirname(outputPath), `.cursor-${timestamp}.jsonl`);
+const clickPath = path.join(path.dirname(outputPath), `.clicks-${timestamp}.jsonl`);
 
 function helperPath() {
   if (process.env.RECORDLY_HELPER) return process.env.RECORDLY_HELPER;
@@ -108,6 +109,28 @@ function helperPath() {
     return prebundled;
   }
   return null;
+}
+
+function ensureClickLogger() {
+  const src = path.join(path.dirname(new URL(import.meta.url).pathname), 'click-log.swift');
+  const binDir = path.join(os.homedir(), '.cache', 'recordly-cli');
+  fs.mkdirSync(binDir, { recursive: true });
+  const bin = path.join(binDir, 'click-log');
+  let needCompile = !fs.existsSync(bin);
+  if (!needCompile) {
+    try {
+      const s = fs.statSync(src); const b = fs.statSync(bin);
+      if (s.mtimeMs > b.mtimeMs) needCompile = true;
+    } catch { needCompile = true; }
+  }
+  if (needCompile) {
+    const r = spawnSync('swiftc', ['-O', src, '-o', bin], { stdio: 'pipe' });
+    if (r.status !== 0) {
+      console.error('Failed to compile click logger:', r.stderr?.toString());
+      return null;
+    }
+  }
+  return bin;
 }
 
 function ffmpegPath() {
@@ -144,9 +167,12 @@ function recordMac() {
 
   // Start cursor logger if auto-zoom requested
   let cursorProc = null;
+  let clickProc = null;
   if (opts.autoZoom && opts.autoZoom > 1) {
     const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'cursor-log.py');
     cursorProc = spawn('python3', [script, cursorPath], { stdio: 'ignore' });
+    const clickBin = ensureClickLogger();
+    if (clickBin) clickProc = spawn(clickBin, [clickPath], { stdio: 'ignore' });
   }
 
   const p = spawn(hp, [cfg], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -183,6 +209,7 @@ function recordMac() {
     const m = buf.match(/Recording stopped\. Output path: (.+)/);
     const finalPath = m ? m[1].trim() : capturePath;
     if (cursorProc) { try { cursorProc.kill(); } catch {} }
+    if (clickProc) { try { clickProc.kill(); } catch {} }
     if (code === 0) {
       console.log(`\nSaved: ${finalPath}`);
     } else {
@@ -229,7 +256,7 @@ function runPostProcess() {
   if (opts.autoZoom && opts.autoZoom > 1) {
     return new Promise((resolve, reject) => {
       const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'autozoom.py');
-      const p = spawn('python3', [script, capturePath, cursorPath, String(opts.autoZoom), outputPath], { stdio: 'inherit' });
+      const p = spawn('python3', [script, capturePath, cursorPath, clickPath, String(opts.autoZoom), outputPath], { stdio: 'inherit' });
       p.on('exit', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`autozoom failed (exit ${code})`));
