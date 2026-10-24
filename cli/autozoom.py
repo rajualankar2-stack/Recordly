@@ -13,6 +13,17 @@ cursor_path = sys.argv[2]
 click_path = sys.argv[3]
 zoom = float(sys.argv[4])
 outp = sys.argv[5]
+redact_str = sys.argv[6] if len(sys.argv) > 6 else None
+
+redact_regions = []
+if redact_str:
+    for part in redact_str.split(';'):
+        part = part.strip()
+        if not part:
+            continue
+        nums = [int(x) for x in part.split(',')]
+        if len(nums) == 4:
+            redact_regions.append(nums)
 
 # Load cursor samples
 samples = []
@@ -32,10 +43,13 @@ if os.path.exists(click_path):
             if line:
                 clicks.append(json.loads(line))
 
-if not samples:
+if not samples and not redact_regions:
     print("No cursor samples; copying input")
     subprocess.run(['ffmpeg','-y','-i',inp,'-c','copy',outp], check=True)
     sys.exit(0)
+
+if not samples:
+    samples = [{'t': 0.0, 'x': 640.0, 'y': 360.0}]
 
 ts = np.array([s['t'] for s in samples], dtype=float)
 xs = np.array([s['x'] for s in samples], dtype=float)
@@ -105,6 +119,17 @@ while True:
     if len(raw) < frame_size:
         break
     img = Image.frombytes('RGB', (W, H), raw)
+    # Redact sensitive regions (blur)
+    if redact_regions:
+        from PIL import ImageFilter
+        for (rx, ry, rw, rh) in redact_regions:
+            rx = max(0, rx); ry = max(0, ry)
+            rw = min(rw, W - rx); rh = min(rh, H - ry)
+            if rw <= 0 or rh <= 0:
+                continue
+            region = img.crop((rx, ry, rx + rw, ry + rh))
+            blurred = region.filter(ImageFilter.GaussianBlur(radius=12))
+            img.paste(blurred, (rx, ry))
     t = i / fps
     cx, cy, sp = cursor_at(t)
 

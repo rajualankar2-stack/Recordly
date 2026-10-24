@@ -32,6 +32,7 @@ Options: `-o/--output`, `-d/--duration`, `--display`, `--window`, `--fps`,
 
 macOS uses the bundled ScreenCaptureKit helper; other platforms fall back to ffmpeg.
 Auto-zoom post-processing (`cli/autozoom.py`) follows cursor telemetry and clicks.
+Use `--redact "x,y,w,h"` (semicolon for multiple) to blur sensitive regions (email fields, forms).
 
 
 <img width="1280" height="720" alt="MP4 to GIF export (4)" src="https://github.com/user-attachments/assets/e6d68606-5fc0-4f70-99cd-7521982dc13b" />
