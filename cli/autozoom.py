@@ -170,4 +170,3 @@ if r.returncode == 0 and os.path.exists(final_tmp):
     os.remove(tmp)
 else:
     os.replace(tmp, outp)
-PY
