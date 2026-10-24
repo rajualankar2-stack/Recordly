@@ -6,7 +6,7 @@ holds while active, pans to new areas, and eases back to 1x when idle.
 """
 import sys, json, subprocess, time, os
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 inp = sys.argv[1]
 cursor_path = sys.argv[2]
@@ -109,7 +109,7 @@ dec = subprocess.Popen(
 enc = subprocess.Popen(
     ['ffmpeg','-hide_banner','-loglevel','error','-y',
      '-f','rawvideo','-pix_fmt','rgb24','-s',f'{W}x{H}','-r',str(fps),'-i','-',
-     '-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p',outp],
+     '-c:v','libx264','-preset','ultrafast','-crf','20','-pix_fmt','yuv420p',outp],
     stdin=subprocess.PIPE)
 
 frame_size = W * H * 3
@@ -121,7 +121,6 @@ while True:
     img = Image.frombytes('RGB', (W, H), raw)
     # Redact sensitive regions (blur)
     if redact_regions:
-        from PIL import ImageFilter
         for (rx, ry, rw, rh) in redact_regions:
             rx = max(0, rx); ry = max(0, ry)
             rw = min(rw, W - rx); rh = min(rh, H - ry)
@@ -158,20 +157,21 @@ while True:
     left = max(0, min(W - cw, left))
     top = max(0, min(H - ch, top))
     crop = img.crop((left, top, left + cw, top + ch))
-    out_img = crop.resize((W, H), Image.LANCZOS)
+    out_img = crop.resize((W, H), Image.BILINEAR)
 
     if clicks:
-        overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        for c in clicks:
-            age = t - c['t']
-            if 0 <= age <= 0.5:
+        recent_clicks = [c for c in clicks if 0 <= t - c['t'] <= 0.5]
+        if recent_clicks:
+            overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            for c in recent_clicks:
+                age = t - c['t']
                 kx = (c['x'] * scale - left) * (W / cw)
                 ky = (c['y'] * scale - top) * (H / ch)
                 r = int(8 + age * 80)
                 a = int(220 * (1 - age / 0.5))
                 od.ellipse((kx - r, ky - r, kx + r, ky + r), outline=(255, 60, 60, a), width=3)
-        out_img = Image.alpha_composite(out_img.convert('RGBA'), overlay).convert('RGB')
+            out_img = Image.alpha_composite(out_img.convert('RGBA'), overlay).convert('RGB')
 
     enc.stdin.write(out_img.tobytes())
     i += 1
