@@ -13,6 +13,27 @@ Language: EN | [简中](README.zh-CN.md)
 [Recordly](https://www.recordly.dev) is your **open-source screen recorder** and editor for **walkthroughs, demos, product videos**, and more. 
 **Accepting PRs.**
 
+---
+
+## CLI Screen Recorder (this fork)
+
+This fork adds a headless CLI recorder so you can capture the screen (and optionally
+auto-zoom on cursor activity) without launching the Electron app.
+
+```bash
+npm run record -- --duration 60 -o out.mp4
+npm run record -- --auto-zoom 2 --duration 60 -o out.mp4
+npm run record -- --help
+```
+
+Options: `-o/--output`, `-d/--duration`, `--display`, `--window`, `--fps`,
+`--system-audio`, `--mic`, `--zoom`, `--auto-zoom`, `--crop`, `--open`,
+`--keep-raw`.
+
+macOS uses the bundled ScreenCaptureKit helper; other platforms fall back to ffmpeg.
+Auto-zoom post-processing (`cli/autozoom.py`) follows cursor telemetry and clicks.
+
+
 <img width="1280" height="720" alt="MP4 to GIF export (4)" src="https://github.com/user-attachments/assets/e6d68606-5fc0-4f70-99cd-7521982dc13b" />
 
 
