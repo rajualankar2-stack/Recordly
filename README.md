@@ -363,6 +363,12 @@ Options:
 - `--system-audio` — capture system audio (macOS native helper)
 - `--mic` — capture microphone (macOS native helper)
 
+Post-processing (ffmpeg):
+- `--zoom <factor>` — center zoom (e.g. 2.0)
+- `--crop x,y,w,h` — crop region
+- `--keep-raw` — keep unprocessed capture
+- `--open` — open final file when done
+
 On macOS this uses the bundled ScreenCaptureKit helper. On Linux/Windows it falls back to ffmpeg (gdigrab/x11grab/avfoundation). Set `RECORDLY_HELPER` to point at a custom helper binary.
 
 # Contribution

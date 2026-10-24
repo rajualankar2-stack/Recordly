@@ -32,7 +32,10 @@ const opts = {
   fps: 60,
   systemAudio: false,
   mic: false,
-  help: false,
+  zoom: null,
+  crop: null,
+  open: false,
+  keepRaw: false,
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -45,6 +48,10 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--fps') opts.fps = Number(args[++i]);
   else if (a === '--system-audio') opts.systemAudio = true;
   else if (a === '--mic') opts.mic = true;
+  else if (a === '--zoom') opts.zoom = Number(args[++i]);
+  else if (a === '--crop') opts.crop = args[++i];
+  else if (a === '--open') opts.open = true;
+  else if (a === '--keep-raw') opts.keepRaw = true;
   else if (a === 'record') {
     // allow `recordly record ...`
   } else {
@@ -78,6 +85,11 @@ const outputPath = opts.output
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
+const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop;
+const capturePath = needsPost
+  ? path.join(path.dirname(outputPath), `.raw-${timestamp}.mp4`)
+  : outputPath;
+
 function helperPath() {
   if (process.env.RECORDLY_HELPER) return process.env.RECORDLY_HELPER;
   if (process.platform === 'darwin') {
@@ -105,7 +117,7 @@ function ffmpegPath() {
 }
 
 function buildMacConfig() {
-  const cfg = { fps: opts.fps, outputPath, capturesSystemAudio: opts.systemAudio, capturesMicrophone: opts.mic };
+  const cfg = { fps: opts.fps, outputPath: capturePath, capturesSystemAudio: opts.systemAudio, capturesMicrophone: opts.mic };
   if (opts.window) {
     cfg.windowId = Number(opts.window);
   } else if (opts.display) {
@@ -124,7 +136,7 @@ function recordMac() {
     process.exit(1);
   }
   const cfg = JSON.stringify(buildMacConfig());
-  console.log(`Recording to ${outputPath}`);
+  console.log(`Recording to ${capturePath}`);
   console.log('Press Ctrl+C to stop' + (opts.duration ? ` (or wait ${opts.duration}s)` : '') + '.');
 
   const p = spawn(hp, [cfg], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -158,16 +170,15 @@ function recordMac() {
   process.on('SIGTERM', () => stop());
 
   p.on('exit', (code) => {
-    // ensure output path printed
     const m = buf.match(/Recording stopped\. Output path: (.+)/);
-    const finalPath = m ? m[1].trim() : outputPath;
+    const finalPath = m ? m[1].trim() : capturePath;
     if (code === 0) {
       console.log(`\nSaved: ${finalPath}`);
     } else {
       console.error(`\nRecording failed (exit ${code})`);
       process.exit(code ?? 1);
     }
-    process.exit(0);
+    finish();
   });
 }
 
@@ -184,8 +195,8 @@ function recordFfmpeg() {
     console.error('Unsupported platform for ffmpeg fallback: ' + process.platform);
     process.exit(1);
   }
-  const args = [...inputArgs, '-r', String(opts.fps), outputPath];
-  console.log(`Recording to ${outputPath} via ffmpeg (Ctrl+C to stop)`);
+  const args = [...inputArgs, '-r', String(opts.fps), capturePath];
+  console.log(`Recording to ${capturePath} via ffmpeg (Ctrl+C to stop)`);
   const p = spawn(ffmpeg, args, { stdio: 'inherit' });
   let stopped = false;
   const stop = () => {
@@ -197,9 +208,54 @@ function recordFfmpeg() {
   process.on('SIGINT', () => { console.log('\nStopping...'); stop(); });
   process.on('SIGTERM', () => stop());
   p.on('exit', (code) => {
-    console.log(`\nSaved: ${outputPath}`);
-    process.exit(code ?? 0);
+    console.log(`\nSaved: ${capturePath}`);
+    if (code && code !== 0) process.exit(code);
+    finish();
   });
+}
+
+function runPostProcess() {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = ffmpegPath();
+    const filters = [];
+    if (opts.crop) {
+      const [x, y, w, h] = opts.crop.split(',').map((n) => n.trim());
+      filters.push(`crop=${w}:${h}:${x}:${y}`);
+    }
+    if (opts.zoom && opts.zoom > 1) {
+      const z = opts.zoom;
+      filters.push(`scale=iw*${z}:ih*${z},crop=iw/${z}:ih/${z}:(iw-iw/${z})/2:(ih-ih/${z})/2`);
+    }
+    const args = ['-y', '-i', capturePath];
+    if (filters.length) args.push('-vf', filters.join(','));
+    args.push('-c:a', 'copy', outputPath);
+    console.log(`Post-processing -> ${outputPath}`);
+    const p = spawn(ffmpeg, args, { stdio: 'inherit' });
+    p.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg post-process failed (exit ${code})`));
+    });
+  });
+}
+
+function finish() {
+  if (needsPost) {
+    runPostProcess()
+      .then(() => {
+        if (!opts.keepRaw) fs.rmSync(capturePath, { force: true });
+        console.log(`Final: ${outputPath}`);
+        if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
+        process.exit(0);
+      })
+      .catch((e) => {
+        console.error(e.message);
+        process.exit(1);
+      });
+  } else {
+    console.log(`Final: ${outputPath}`);
+    if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
+    process.exit(0);
+  }
 }
 
 if (process.platform === 'darwin') {
