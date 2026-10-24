@@ -57,14 +57,30 @@ def ema(arr, alpha=0.15):
 xs_s = ema(xs)
 ys_s = ema(ys)
 
+# Cursor speed per sample
+speeds = np.zeros(len(xs))
+for i in range(1, len(xs)):
+    dt = ts[i] - ts[i-1]
+    if dt <= 0: dt = 1e-3
+    speeds[i] = np.hypot(xs[i]-xs[i-1], ys[i]-ys[i-1]) / dt
+speeds_s = ema(speeds, 0.1)
+# normalize to 0..1
+smin, smax = np.percentile(speeds_s, 5), np.percentile(speeds_s, 95)
+if smax - smin < 1e-6:
+    smax = smin + 1
+activity = np.clip((speeds_s - smin) / (smax - smin), 0, 1)
+# zoom level per sample: 1.0 when idle, maxZoom when active
+zoom_samples = 1.0 + (zoom - 1.0) * activity
+zoom_samples = ema(zoom_samples, 0.08)
+
 def cursor_at(t):
     x = float(np.interp(t, ts, xs_s))
     y = float(np.interp(t, ts, ys_s))
-    return x * scale, y * scale
+    z = float(np.interp(t, ts, zoom_samples))
+    return x * scale, y * scale, z
 
-# Crop size
-cw = int(W / zoom)
-ch = int(H / zoom)
+# Crop size (computed per frame now)
+pass
 
 # Decoder
 dec = subprocess.Popen(
@@ -86,7 +102,9 @@ while True:
         break
     img = Image.frombytes('RGB', (W, H), raw)
     t = i / fps
-    cx, cy = cursor_at(t)
+    cx, cy, cz = cursor_at(t)
+    cw = int(W / cz)
+    ch = int(H / cz)
     # clamp crop top-left
     left = int(cx - cw / 2)
     top = int(cy - ch / 2)
