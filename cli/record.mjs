@@ -5,7 +5,7 @@
  * Records the screen to a video file without the Electron UI.
  *
  * Usage:
- *   recordly record [options]
+ *   vidcli record [options]
  *   node cli/record.mjs [options]
  *
  * Options:
@@ -67,7 +67,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--open') opts.open = true;
   else if (a === '--keep-raw') opts.keepRaw = true;
   else if (a === 'record') {
-    // allow `recordly record ...`
+    // allow `vidcli record ...`
   } else {
     console.error(`Unknown argument: ${a}`);
     process.exit(2);
@@ -77,7 +77,7 @@ for (let i = 0; i < args.length; i++) {
 if (opts.help) {
   console.log(`VidCLI recorder
 
-Usage: recordly record [options]  (or: node cli/record.mjs [options])
+Usage: vidcli record [options]  (or: node cli/record.mjs [options])
 
 Options:
   -o, --output <path>     Output file (default: ./vidcli-<timestamp>.mp4)
