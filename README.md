@@ -362,7 +362,7 @@ Recordly combines a platform-specific capture layer with a renderer-driven edito
 
 ---
 
-## CLI recording (this fork)
+## CLI recording (VidCLI)
 
 This fork adds a command-line recorder so you can capture the screen without the Electron UI.
 
@@ -377,7 +377,7 @@ node cli/record.mjs --duration 10 -o ./demo.mp4
 
 Options:
 
-- `-o, --output <path>` — output file (default: `./recordly-<timestamp>.mp4`)
+- `-o, --output <path>` — output file (default: `./vidcli-<timestamp>.mp4`)
 - `-d, --duration <sec>` — stop after N seconds (default: record until Ctrl+C)
 - `--display <id>` — display id to capture (default: primary display)
 - `--window <id>` — capture a window by id instead of a display

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Recordly CLI recorder.
+ * VidCLI recorder.
  *
  * Records the screen to a video file without the Electron UI.
  *
@@ -9,7 +9,7 @@
  *   node cli/record.mjs [options]
  *
  * Options:
- *   -o, --output <path>     Output file (default: ./recordly-<timestamp>.mp4)
+ *   -o, --output <path>     Output file (default: ./vidcli-<timestamp>.mp4)
  *   -d, --duration <sec>    Stop after N seconds (default: record until Ctrl+C)
  *   --display <id>          Display id to capture (default: primary)
  *   --fps <n>               Frame rate (default: 60)
@@ -75,12 +75,12 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (opts.help) {
-  console.log(`Recordly CLI recorder
+  console.log(`VidCLI recorder
 
 Usage: recordly record [options]  (or: node cli/record.mjs [options])
 
 Options:
-  -o, --output <path>     Output file (default: ./recordly-<timestamp>.mp4)
+  -o, --output <path>     Output file (default: ./vidcli-<timestamp>.mp4)
   -d, --duration <sec>    Stop after N seconds (default: until Ctrl+C)
   --display <id>          Display id to capture (default: primary)
   --fps <n>               Frame rate (default: 60)
@@ -117,7 +117,7 @@ if (opts.windowName) {
 const timestamp = Date.now();
 const outputPath = opts.output
   ? path.resolve(opts.output)
-  : path.resolve(process.cwd(), `recordly-${timestamp}.mp4`);
+  : path.resolve(process.cwd(), `vidcli-${timestamp}.mp4`);
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -129,7 +129,7 @@ const cursorPath = path.join(path.dirname(outputPath), `.cursor-${timestamp}.jso
 const clickPath = path.join(path.dirname(outputPath), `.clicks-${timestamp}.jsonl`);
 
 function helperPath() {
-  if (process.env.RECORDLY_HELPER) return process.env.RECORDLY_HELPER;
+  if (process.env.VIDCLI_HELPER || process.env.RECORDLY_HELPER) return process.env.VIDCLI_HELPER || process.env.RECORDLY_HELPER;
   if (process.platform === 'darwin') {
     const arch = process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
     // resolve relative to this file's repo root
@@ -138,7 +138,7 @@ function helperPath() {
     if (fs.existsSync(prebundled)) return prebundled;
     // userData-style compiled location
     const home = os.homedir();
-    const userData = path.join(home, 'Library', 'Application Support', 'Recordly', 'native-tools', 'recordly-screencapturekit-helper');
+    const userData = path.join(home, 'Library', 'Application Support', 'VidCLI', 'native-tools', 'recordly-screencapturekit-helper');
     if (fs.existsSync(userData)) return userData;
     return prebundled;
   }
@@ -147,7 +147,7 @@ function helperPath() {
 
 function ensureClickLogger() {
   const src = path.join(path.dirname(new URL(import.meta.url).pathname), 'click-log.swift');
-  const binDir = path.join(os.homedir(), '.cache', 'recordly-cli');
+  const binDir = path.join(os.homedir(), '.cache', 'vidcli-cli');
   fs.mkdirSync(binDir, { recursive: true });
   const bin = path.join(binDir, 'click-log');
   let needCompile = !fs.existsSync(bin);
@@ -192,7 +192,7 @@ function recordMac() {
   const hp = helperPath();
   if (!hp || !fs.existsSync(hp)) {
     console.error(`Native helper not found: ${hp}`);
-    console.error('Build it with: npm run build:native-helpers (or set RECORDLY_HELPER)');
+    console.error('Build it with: npm run build:native-helpers (or set VIDCLI_HELPER)');
     process.exit(1);
   }
   const cfg = JSON.stringify(buildMacConfig());
