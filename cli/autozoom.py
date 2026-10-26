@@ -36,6 +36,10 @@ if auto_mode in ('sensitive', 'all'):
     phone_re = re.compile(r'(\+?\d[\d\s\-()]{7,}\d)')
     card_re = re.compile(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b')
     boxes = []
+
+    def add_box(left, top, w, h, pad=8):
+        boxes.append((max(0, left - pad), max(0, top - pad), w + 2 * pad, h + 2 * pad))
+
     for t in sample_times:
         tmp = tempfile.mktemp(suffix='.png')
         subprocess.run(['ffmpeg','-y','-ss',str(t),'-i',inp,'-vframes','1',tmp],
@@ -47,26 +51,46 @@ if auto_mode in ('sensitive', 'all'):
             os.remove(tmp)
         except OSError:
             pass
+        words = []
         for line in r.stdout.splitlines()[1:]:
             cols = line.split('\t')
             if len(cols) < 12:
                 continue
             try:
+                level = int(cols[0])
+                key = (int(cols[1]), int(cols[2]), int(cols[3]), int(cols[4]))  # page, block, par, line
                 left = int(cols[6]); top = int(cols[7]); w = int(cols[8]); h = int(cols[9])
                 conf = float(cols[10]); text = cols[11].strip()
             except ValueError:
                 continue
-            if w <= 0 or h <= 0 or conf < 30:
+            if level != 5 or not text or w <= 0 or h <= 0:
                 continue
-            keep = False
-            if auto_mode == 'all':
-                keep = True
-            else:
-                if email_re.search(text) or phone_re.search(text) or card_re.search(text):
-                    keep = True
-            if keep:
-                pad = 8
-                boxes.append((max(0,left-pad), max(0,top-pad), w+2*pad, h+2*pad))
+            words.append((key, left, top, w, h, conf, text))
+        if auto_mode == 'all':
+            for (_key, left, top, w, h, conf, _text) in words:
+                if conf >= 30:
+                    add_box(left, top, w, h)
+            continue
+        # Match whole OCR lines, not single words: tesseract splits "+1 555 0100" and
+        # "4242 4242 4242 4242" into separate words, so per-word matching missed them.
+        lines = {}
+        for wd in words:
+            lines.setdefault(wd[0], []).append(wd)
+        for line_words in lines.values():
+            line_words.sort(key=lambda wd: wd[1])
+            spans, pos = [], 0
+            for wd in line_words:
+                spans.append((pos, pos + len(wd[6]), wd))
+                pos += len(wd[6]) + 1
+            line_text = ' '.join(wd[6] for wd in line_words)
+            for rx in (email_re, phone_re, card_re):
+                for m in rx.finditer(line_text):
+                    hit = [wd for (a, b, wd) in spans if a < m.end() and b > m.start()]
+                    if not hit:
+                        continue
+                    x0 = min(wd[1] for wd in hit); y0 = min(wd[2] for wd in hit)
+                    x1 = max(wd[1] + wd[3] for wd in hit); y1 = max(wd[2] + wd[4] for wd in hit)
+                    add_box(x0, y0, x1 - x0, y1 - y0)
     # merge overlapping boxes
     merged = []
     for b in boxes:
