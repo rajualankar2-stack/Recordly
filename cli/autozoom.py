@@ -4,7 +4,7 @@
 Intelligent mode: zooms in only on real activity (movement bursts / clicks),
 holds while active, pans to new areas, and eases back to 1x when idle.
 """
-import sys, json, subprocess, time, os
+import sys, json, subprocess, time, os, shutil
 import numpy as np
 _start_time = time.time()
 from PIL import Image, ImageDraw, ImageFilter
@@ -24,6 +24,9 @@ redact_regions = []
 # Auto-redact: detect text regions via OCR on sampled frames
 if auto_mode in ('sensitive', 'all'):
     import re, tempfile
+    if not shutil.which('tesseract'):
+        # Fail rather than skip: the user asked for redaction, so don't ship the video unredacted.
+        sys.exit('auto-redact needs tesseract on PATH (macOS: brew install tesseract)')
     # probe duration
     probe2 = subprocess.run(['ffprobe','-v','error','-select_streams','v:0',
         '-show_entries','stream=duration','-of','json',inp], capture_output=True, text=True)
@@ -40,8 +43,9 @@ if auto_mode in ('sensitive', 'all'):
     def add_box(left, top, w, h, pad=8):
         boxes.append((max(0, left - pad), max(0, top - pad), w + 2 * pad, h + 2 * pad))
 
+    tmpdir = tempfile.mkdtemp()
     for t in sample_times:
-        tmp = tempfile.mktemp(suffix='.png')
+        tmp = os.path.join(tmpdir, 'frame.png')
         subprocess.run(['ffmpeg','-y','-ss',str(t),'-i',inp,'-vframes','1',tmp],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         if not os.path.exists(tmp):
@@ -91,6 +95,7 @@ if auto_mode in ('sensitive', 'all'):
                     x0 = min(wd[1] for wd in hit); y0 = min(wd[2] for wd in hit)
                     x1 = max(wd[1] + wd[3] for wd in hit); y1 = max(wd[2] + wd[4] for wd in hit)
                     add_box(x0, y0, x1 - x0, y1 - y0)
+    shutil.rmtree(tmpdir, ignore_errors=True)
     # merge overlapping boxes
     merged = []
     for b in boxes:
@@ -122,14 +127,20 @@ if redact_str:
         if len(nums) == 4:
             redact_regions.append(nums)
 
-# Load cursor samples
+# Load cursor samples. cursor-log.py writes the captured area (global points) as its first
+# line; cursor and click coordinates are in that same space.
 samples = []
+region = None
 if os.path.exists(cursor_path):
     with open(cursor_path) as f:
         for line in f:
             line = line.strip()
             if line:
-                samples.append(json.loads(line))
+                rec = json.loads(line)
+                if 'region' in rec:
+                    region = rec['region']
+                else:
+                    samples.append(rec)
 
 # Load clicks
 clicks = []
@@ -144,13 +155,6 @@ if not samples and not redact_regions:
     print("No cursor samples; copying input")
     subprocess.run(['ffmpeg','-y','-i',inp,'-c','copy',outp], check=True)
     sys.exit(0)
-
-if not samples:
-    samples = [{'t': 0.0, 'x': 640.0, 'y': 360.0}]
-
-ts = np.array([s['t'] for s in samples], dtype=float)
-xs = np.array([s['x'] for s in samples], dtype=float)
-ys = np.array([s['y'] for s in samples], dtype=float)
 
 probe = subprocess.run(['ffprobe','-v','error','-select_streams','v:0',
     '-show_entries','stream=width,height,r_frame_rate','-of','json',inp],
@@ -170,8 +174,20 @@ try:
 except Exception:
     est_total = 0
 
-logical_w = 1280.0
-scale = W / logical_w
+if region and region.get('w', 0) > 0:
+    origin_x, origin_y = float(region['x']), float(region['y'])
+    scale = W / float(region['w'])  # video pixels per point (2 on Retina)
+else:
+    # Telemetry recorded before the region header existed: assume a 1280pt-wide main display.
+    origin_x = origin_y = 0.0
+    scale = W / 1280.0
+
+if not samples:
+    samples = [{'t': 0.0, 'x': origin_x + W / 2.0 / scale, 'y': origin_y + H / 2.0 / scale}]
+
+ts = np.array([s['t'] for s in samples], dtype=float)
+xs = np.array([s['x'] for s in samples], dtype=float)
+ys = np.array([s['y'] for s in samples], dtype=float)
 
 def ema(arr, alpha=0.15):
     out = arr.copy()
@@ -203,8 +219,8 @@ last_active = 0.0
 DWELL = 2.0
 
 def cursor_at(t):
-    x = float(np.interp(t, ts, xs_s)) * scale
-    y = float(np.interp(t, ts, ys_s)) * scale
+    x = (float(np.interp(t, ts, xs_s)) - origin_x) * scale
+    y = (float(np.interp(t, ts, ys_s)) - origin_y) * scale
     sp = float(np.interp(t, ts, speeds_s))
     return x, y, sp
 
@@ -272,8 +288,8 @@ while True:
             od = ImageDraw.Draw(overlay)
             for c in recent_clicks:
                 age = t - c['t']
-                kx = (c['x'] * scale - left) * (W / cw)
-                ky = (c['y'] * scale - top) * (H / ch)
+                kx = ((c['x'] - origin_x) * scale - left) * (W / cw)
+                ky = ((c['y'] - origin_y) * scale - top) * (H / ch)
                 r = int(8 + age * 80)
                 a = int(220 * (1 - age / 0.5))
                 od.ellipse((kx - r, ky - r, kx + r, ky + r), outline=(255, 60, 60, a), width=3)

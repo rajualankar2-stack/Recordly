@@ -380,19 +380,29 @@ Options:
 - `-o, --output <path>` — output file (default: `./vidcli-<timestamp>.mp4`)
 - `-d, --duration <sec>` — stop after N seconds (default: record until Ctrl+C)
 - `--display <id>` — display id to capture (default: primary display)
-- `--window <id>` — capture a window by id instead of a display
-- `--fps <n>` — frame rate (default: 60)
-- `--system-audio` — capture system audio (macOS native helper)
-- `--mic` — capture microphone (macOS native helper)
+- `--window <id>` — capture a window by id instead of a display (macOS)
+- `--window-name <name>` — capture the first window whose app/title contains `<name>` (macOS)
+- `--fps <n>` — frame rate (default: 60; the macOS helper never records below 60)
+- `--system-audio` — capture system audio (macOS)
+- `--mic` — capture microphone (macOS)
 
-Post-processing (ffmpeg):
-- `--zoom <factor>` — center zoom (e.g. 2.0)
-- `--auto-zoom <factor>` — cursor-following zoom (e.g. 2.5)
-- `--crop x,y,w,h` — crop region
-- `--keep-raw` — keep unprocessed capture
-- `--open` — open final file when done
+Post-processing:
+- `--zoom <factor>` — static center zoom (e.g. 2.0; ignored with `--auto-zoom`)
+- `--auto-zoom <factor>` — cursor-following zoom with click ripples (macOS, e.g. 2.5)
+- `--crop x,y,w,h` — crop region, in video pixels
+- `--redact "x,y,w,h;..."` — blur regions, in video pixels
+- `--auto-redact` — OCR and blur emails, phone and card numbers
+- `--auto-redact-all` — OCR and blur all detected text (OCR samples the first, middle and last frames only)
+- `--trim-silence` — trim leading/trailing silence (needs an audio track)
+- `--keep-raw` — keep the unprocessed capture and cursor/click telemetry
 
-On macOS this uses the bundled ScreenCaptureKit helper. On Linux/Windows it falls back to ffmpeg (gdigrab/x11grab/avfoundation). Set `RECORDLY_HELPER` to point at a custom helper binary.
+Output:
+- `--open` — open the final file when done
+- `--print-media` — print `MEDIA:<path>` once the final file is written
+
+On macOS this uses the bundled ScreenCaptureKit helper. On Linux/Windows it falls back to ffmpeg (x11grab/gdigrab). Set `VIDCLI_HELPER` (or the older `RECORDLY_HELPER`) to point at a custom helper binary.
+
+Post-processing needs `ffmpeg`; `--auto-zoom` and redaction also need `python3` with `numpy` and `Pillow`, and `--auto-redact*` needs `tesseract`.
 
 # Contribution
 

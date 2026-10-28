@@ -1,6 +1,5 @@
 import Foundation
 import CoreGraphics
-import AppKit
 
 guard CommandLine.arguments.count >= 2 else {
     fputs("usage: click-log <outpath>\n", stderr)
@@ -15,13 +14,12 @@ var prev = false
 
 while true {
     let down = CGEventSource.buttonState(.combinedSessionState, button: .left)
-    if down && !prev {
-        let mouseLoc = NSEvent.mouseLocation
-        let screenH = NSScreen.main?.frame.height ?? 0
-        let x = mouseLoc.x
-        let y = screenH - mouseLoc.y
+    // CGEvent locations are global points with a top-left origin, the same space cursor-log.py
+    // logs in. (Flipping NSEvent.mouseLocation by NSScreen.main's height breaks on multi-monitor
+    // setups, since NSScreen.main is the key window's screen, not the primary one.)
+    if down && !prev, let loc = CGEvent(source: nil)?.location {
         let t = ProcessInfo.processInfo.systemUptime - start
-        let line = String(format: "{\"t\":%.6f,\"x\":%.2f,\"y\":%.2f}\n", t, x, y)
+        let line = String(format: "{\"t\":%.6f,\"x\":%.2f,\"y\":%.2f}\n", t, loc.x, loc.y)
         if let data = line.data(using: .utf8) { fh.write(data) }
     }
     prev = down
