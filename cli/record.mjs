@@ -24,6 +24,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
+
+// `vidcli compose ...` hands off to the narration/caption composer.
+if (args[0] === 'compose') {
+  const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'compose.py');
+  const r = spawnSync('python3', [script, ...args.slice(1)], { stdio: 'inherit' });
+  process.exit(r.status ?? 1);
+}
 const opts = {
   output: null,
   duration: null,
@@ -90,6 +97,7 @@ if (opts.help) {
   console.log(`VidCLI recorder
 
 Usage: vidcli record [options]  (or: node cli/record.mjs [options])
+       vidcli compose --video take.mp4 --lines lines.json -o final.mp4   (see: vidcli compose --help)
 
 Options:
   -o, --output <path>     Output file (default: ./vidcli-<timestamp>.mp4)
@@ -495,6 +503,15 @@ function writeManifest() {
     try { meta.redactions = JSON.parse(fs.readFileSync(redFile, 'utf8')); } catch { meta.redactions = null; }
   } else if (opts.redactText || opts.autoRedact || opts.autoRedactAll || opts.redact) {
     meta.redactions = { requested: { text: opts.redactText || null, auto: opts.autoRedactAll ? 'all' : (opts.autoRedact ? 'sensitive' : null), regions: opts.redact || null } };
+  }
+  if (opts.redactText) {
+    const found = ((meta.redactions && meta.redactions.boxes) || []).length;
+    if (!found) {
+      const msg = `--redact-text matched nothing for "${opts.redactText}". If those words were on screen, the video is NOT redacted. Retry with a smaller --redact-sample.`;
+      console.error(`WARNING: ${msg}`);
+      meta.redactions = { ...(meta.redactions || {}), warning: msg };
+      emit('redaction.warning', { message: msg });
+    }
   }
   try {
     fs.writeFileSync(manifestPath, JSON.stringify(meta, null, 1));

@@ -40,11 +40,25 @@ def probe(path):
 _first_focus = [True]
 
 
+def board_on_screen():
+    shot = os.path.join(HERE, "screen_check.png")
+    subprocess.run(["screencapture", "-x", shot], capture_output=True)
+    r = sh(["tesseract", shot, "stdout"])
+    os.path.exists(shot) and os.remove(shot)
+    return "nobody" in r.stdout.lower() or "hermes-e2e" in r.stdout.lower()
+
+
 def focus_board():
-    subprocess.run(["open", "-a", "Preview", os.path.join(HERE, "board.png")],
-                   capture_output=True, text=True)
-    time.sleep(4.5 if _first_focus[0] else 1.5)
-    _first_focus[0] = False
+    """Bring the test board to the front and confirm it is really on screen (retry up to 4 times)."""
+    for attempt in range(4):
+        subprocess.run(["open", "-a", "Preview", os.path.join(HERE, "board.png")],
+                       capture_output=True, text=True)
+        time.sleep(4.5 if _first_focus[0] else 2.0)
+        _first_focus[0] = False
+        if board_on_screen():
+            return True
+    print("WARNING: test board not visible on screen", flush=True)
+    return False
 
 
 def board_boxes(path):
@@ -184,6 +198,12 @@ if boxes:
     txt = ocr_region(r2["out"], b["x"], b["y"], b["w"], b["h"])
     add("T2 text unreadable", "hermes" not in txt and "secret" not in txt, f"ocr={txt.strip()[:40]!r}")
 
+print("== T2b redact-text that matches nothing must warn", flush=True)
+r2b = record("t2b_nomatch", ["-d", "3", "--redact-text", "zzqx-not-on-screen"])
+m2b = (r2b["manifest"] or {}).get("redactions") or {}
+add("T2b warning in manifest", bool(m2b.get("warning")), f"warning={str(m2b.get('warning'))[:50]}")
+add("T2b warning event", any(e.get("event") == "redaction.warning" for e in r2b["events"]), "event emitted")
+
 print("== T3 window capture", flush=True)
 r3 = record("t3_window", ["--window-name", "Preview", "-d", "3"])
 m3 = r3["manifest"] or {}
@@ -316,6 +336,124 @@ a13 = (r13["manifest"] or {}).get("audio") or {}
 add("T13 one mixed audio track", len(streams13) == 1, f"audio streams={streams13}")
 add("T13 tone present", hz13 is not None and abs(hz13 - 880.0) < 10, f"peak={hz13}Hz onset={on13}s")
 add("T13 manifest both", a13.get("system") is True and a13.get("microphone") is True, f"audio={a13}")
+
+print()
+print("== T14 MCP server (stdio) records with redact_text", flush=True)
+focus_board()
+mp = subprocess.Popen(["node", "cli/mcp.mjs"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE, text=True)
+_n = [0]
+
+
+def rpc(method, params=None):
+    _n[0] += 1
+    mp.stdin.write(json.dumps({"jsonrpc": "2.0", "id": _n[0], "method": method, "params": params or {}}) + "\n")
+    mp.stdin.flush()
+    return json.loads(mp.stdout.readline())
+
+
+def mcall(name, args=None):
+    res = rpc("tools/call", {"name": name, "arguments": args or {}})["result"]
+    txt = res["content"][0]["text"]
+    return res["isError"], (json.loads(txt) if txt[:1] in "{[" else txt)
+
+
+try:
+    info = rpc("initialize", {"protocolVersion": "2024-11-05"})["result"]
+    tools = [x["name"] for x in rpc("tools/list")["result"]["tools"]]
+    add("T14 handshake+tools", info["serverInfo"]["name"] == "vidcli" and len(tools) == 6, f"tools={tools}")
+    mout = os.path.join(OUT, "t14_mcp.mp4")
+    err, st = mcall("vidcli_start", {"output": mout, "overwrite": True, "redact_text": "hermes-e2e-secret"})
+    add("T14 start", not err and st["id"].startswith("rec-"), f"id={st.get('id') if not err else st}")
+    time.sleep(3.5)
+    err, ss = mcall("vidcli_status", {"id": st["id"]})
+    add("T14 status recording", not err and ss["state"] == "recording", f"state={ss.get('state')}")
+    err, sp = mcall("vidcli_stop", {"id": st["id"]})
+    mm = (sp.get("manifest") or {}) if not err else {}
+    add("T14 stop returns manifest", not err and bool(mm.get("started_at")) and (mm.get("duration_s") or 0) > 2.5,
+        f"duration_s={mm.get('duration_s')}")
+    mb = ((mm.get("redactions") or {}).get("boxes") or [])
+    add("T14 redaction via MCP", len(mb) >= 1, f"{len(mb)} box(es)")
+    if mb:
+        ins, _ = edge_energy(mout, mb[0]["x"], mb[0]["y"], mb[0]["w"], mb[0]["h"])
+        add("T14 blur applied", ins < 1.0, f"inside={ins}")
+    err2, msg = mcall("vidcli_start", {"output": mout})
+    add("T14 refuses overwrite", err2 and "exists" in str(msg), str(msg)[:60])
+    err3, msg3 = mcall("vidcli_start", {"output": "rel.mp4"})
+    add("T14 refuses relative path", err3, str(msg3)[:60])
+finally:
+    mp.stdin.close()
+    try:
+        add("T14 server exits on close", mp.wait(timeout=10) == 0, "exit 0")
+    except subprocess.TimeoutExpired:
+        mp.kill()
+        add("T14 server exits on close", False, "had to kill")
+
+print()
+print("== T15 compose (narration + captions + music + ending)", flush=True)
+import re as _re
+from PIL import Image as _Image
+focus_board()
+for i, txt in enumerate(["This is the first line.", "And this is the second line, a bit longer."]):
+    aiff, wav = os.path.join(HERE, f"v{i}.aiff"), os.path.join(HERE, f"v{i}.wav")
+    sh(["say", "-o", aiff, txt])
+    sh(["ffmpeg", "-v", "error", "-y", "-i", aiff, "-ar", "48000", wav])
+bed = os.path.join(HERE, "bed.wav")
+sh(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=20", "-ar", "48000", bed])
+rt = record("t15_take", ["-d", "6"])
+t0 = (rt["manifest"] or {}).get("started_at")
+lines_path = os.path.join(HERE, "lines.json")
+json.dump({"lines": [
+    {"wav": os.path.join(HERE, "v0.wav"), "ts": (t0 or 0) + 1500, "caption": "First line"},
+    {"wav": os.path.join(HERE, "v1.wav"), "ts": (t0 or 0) + 4800, "caption": "Second line, longer caption"}]},
+    open(lines_path, "w"))
+cfinal = os.path.join(OUT, "t15_final.mp4")
+rc = sh(["node", "cli/record.mjs", "compose", "--video", rt["out"], "--lines", lines_path, "-o", cfinal,
+         "--music", bed])
+add("T15 compose exit", rc.returncode == 0 and os.path.exists(cfinal), (rc.stderr or "")[-80:] or "ok")
+if os.path.exists(cfinal):
+    pc = probe(cfinal)
+    add("T15 size + hold", bool(pc) and pc["w"] == 1920 and 8.8 < pc["dur"] < 9.6, f"{pc}")
+    sil = sh(["ffmpeg", "-i", cfinal, "-af", "highpass=f=600,silencedetect=n=-38dB:d=0.25", "-f", "null", "-"]).stderr
+    ons = [float(x) for x in _re.findall(r"silence_end: ([\d.]+)", sil)]
+    add("T15 voice 1 on time", any(abs(o - 1.5) < 0.25 for o in ons), f"onsets={ons}")
+    add("T15 voice 2 on time", any(abs(o - 4.8) < 0.25 for o in ons), f"onsets={ons}")
+
+    def strip_white(tm):
+        fp = os.path.join(HERE, "cf.png")
+        sh(["ffmpeg", "-v", "error", "-y", "-ss", str(tm), "-i", cfinal, "-frames:v", "1", fp])
+        a = _np.array(_Image.open(fp).convert("RGB"))
+        os.remove(fp)
+        return int((a[-70:].min(axis=2) > 200).sum())
+    add("T15 caption shown", strip_white(2.0) > 300 and strip_white(5.5) > 300,
+        f"white px {strip_white(2.0)} / {strip_white(5.5)}")
+    add("T15 caption hidden between", strip_white(0.5) == 0 and strip_white(3.5) == 0, "strip empty outside lines")
+
+    def fr(tm):
+        fp = os.path.join(HERE, "cf.png")
+        sh(["ffmpeg", "-v", "error", "-y", "-ss", str(tm), "-i", cfinal, "-frames:v", "1", fp])
+        a = _np.array(_Image.open(fp).convert("RGB")).astype(int)
+        os.remove(fp)
+        return a[:-80]
+    add("T15 last frame held", float(_np.abs(fr(6.3) - fr(7.0)).mean()) < 0.5, "frames identical before fade")
+    add("T15 fades to black", int(fr(9.1).mean()) < 20, f"brightness={int(fr(9.1).mean())}")
+
+print("== T16 MCP compose tool", flush=True)
+mp2 = subprocess.Popen(["node", "cli/mcp.mjs"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True)
+try:
+    mp2.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "vidcli_compose", "arguments": {
+            "video": rt["out"], "output": os.path.join(OUT, "t16_mcp_final.mp4"), "overwrite": True,
+            "lines": [{"wav": os.path.join(HERE, "v0.wav"), "ts": (t0 or 0) + 1500, "caption": "Via MCP"}]}}}) + "\n")
+    mp2.stdin.flush()
+    res = json.loads(mp2.stdout.readline())["result"]
+    body = json.loads(res["content"][0]["text"])
+    add("T16 compose via MCP", not res["isError"] and os.path.exists(os.path.join(OUT, "t16_mcp_final.mp4")),
+        f"total_s={body.get('total_s') if isinstance(body, dict) else body}")
+finally:
+    mp2.stdin.close()
+    mp2.wait(timeout=10)
 
 print()
 print()

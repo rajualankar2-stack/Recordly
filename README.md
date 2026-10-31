@@ -51,12 +51,28 @@ each to its own `.m4a`; the CLI merges them into the MP4 (mixed to one track if 
 `audio.muxed` plus `audio: {system, microphone}` in the manifest. System audio needs only the Screen
 Recording permission VidCLI already has; `--mic` needs macOS microphone permission (on first use macOS asks; here it was already granted).
 
+MCP server (no dependencies): `node cli/mcp.mjs` speaks MCP over stdio so an agent can record without shell
+commands. Tools: `vidcli_guide`, `vidcli_windows`, `vidcli_start` (output, window_name, duration, fps,
+system_audio, mic, auto_zoom, redact_text, redact, auto_redact, overwrite), `vidcli_status`, `vidcli_stop`
+(returns the manifest). Output must be an absolute `.mp4` path; existing files are refused unless
+`overwrite` is true; live takes are stopped if the client disconnects. Client config:
+`{"command":"node","args":["<repo>/cli/mcp.mjs"]}`.
+
+Narration: `vidcli compose --video take.mp4 --lines lines.json -o final.mp4 [--music bed.wav]` adds voice
+lines, captions (strip below the video, or `--no-pad`), ducked background music, a held last frame and a
+fade-out. Each line is `{"wav", "ts"|"at", "caption"}`: `ts` is epoch ms and is synced to the take's manifest
+`started_at`, so no hand-tuned offset; `at` is seconds into the video. `--dry` prints the timeline. The same
+is available to agents as the `vidcli_compose` MCP tool.
+
+`--redact-text` samples at least six frames, always including the end, and warns (stderr, manifest
+`redactions.warning`, event `redaction.warning`) when it matched nothing, so a silent miss cannot ship.
+
 End-to-end check (records real takes of a Preview board and asserts the artefacts):
-`npm run test:e2e:cli` — 35 checks covering duration, manifest anchor, `--redact-text`
+`npm run test:e2e:cli` — 55 checks covering duration, manifest anchor, `--redact-text`
 (blur + text still unreadable + neighbouring text untouched), `--window-name`,
 auto-zoom with redaction, `--auto-redact`, static `--redact`, `--no-manifest`,
 `--stop-file`, NDJSON cleanliness, and system audio (an 880 Hz tone must arrive at 880 Hz,
-on time, also through auto-zoom + redaction), `--mic`, and `--mic` + `--system-audio` mixed to one track).
+on time, also through auto-zoom + redaction), `--mic`, and `--mic` + `--system-audio` mixed to one track), the MCP server over stdio, and `compose` with narration timing, captions, held ending and fade).
 
 
 <img width="1280" height="720" alt="MP4 to GIF export (4)" src="https://github.com/user-attachments/assets/e6d68606-5fc0-4f70-99cd-7521982dc13b" />

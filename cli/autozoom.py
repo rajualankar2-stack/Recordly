@@ -78,7 +78,10 @@ if auto_mode in ('sensitive', 'all') or text_terms:
     import re, tempfile
     dur = _probe_duration(inp)
     step = max(0.5, redact_sample)
+    step = max(0.25, min(step, dur / 6.0)) if dur > 0 else step   # short takes still get >= ~6 samples
     sample_times = [round(i * step, 2) for i in range(int(dur / step) + 1)]
+    if dur > 0.3 and (not sample_times or sample_times[-1] < dur - 0.3):
+        sample_times.append(round(max(0.0, dur - 0.2), 2))       # always look at the end of the take
     if len(sample_times) > 60:                      # keep the OCR pass bounded
         sample_times = [round(dur * i / 59.0, 2) for i in range(60)]
     email_re = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
