@@ -49,3 +49,6 @@ gpu-export-probe.mp4
 # Browser test output
 test-results/
 playwright-report/
+
+# end-to-end CLI test artifacts
+.e2e/

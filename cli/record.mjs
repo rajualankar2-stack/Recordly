@@ -43,6 +43,12 @@ const opts = {
   autoRedactAll: false,
   trimSilence: false,
   printMedia: false,
+  redactText: null,
+  redactSample: 2.0,
+  stopFile: null,
+  manifest: true,
+  json: false,
+  overwrite: false,
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -62,6 +68,12 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--redact') opts.redact = args[++i];
   else if (a === '--auto-redact') opts.autoRedact = true;
   else if (a === '--auto-redact-all') opts.autoRedactAll = true;
+  else if (a === '--redact-text') opts.redactText = args[++i];
+  else if (a === '--redact-sample') opts.redactSample = Number(args[++i]);
+  else if (a === '--stop-file') opts.stopFile = args[++i];
+  else if (a === '--no-manifest') opts.manifest = false;
+  else if (a === '--overwrite') opts.overwrite = true;
+  else if (a === '--json') opts.json = true;
   else if (a === '--trim-silence') opts.trimSilence = true;
   else if (a === '--print-media') opts.printMedia = true;
   else if (a === '--open') opts.open = true;
@@ -89,6 +101,13 @@ Options:
   --window <id>           Capture a window by id instead of a display
   --window-name <name>    Resolve window by name (macOS)
   --redact <regions>      Blur regions "x,y,w,h" (semicolon for multiple)
+  --redact-text <words>   Blur any OCR text containing these words (comma separated);
+                          the box follows the text for as long as it is on screen
+  --redact-sample <sec>   OCR sampling interval for redaction (default: 2)
+  --stop-file <path>      Stop recording when this file appears
+  --json                  NDJSON events on stdout (human logs go to stderr)
+  --no-manifest           Do not write <output>.json
+  --overwrite             Replace the output file if it already exists
   --auto-redact           Auto-detect sensitive text (emails, phones) and blur
   --auto-redact-all       Auto-detect and blur ALL text regions
   --trim-silence          Trim leading/trailing silence (requires audio)
@@ -114,19 +133,57 @@ if (opts.windowName) {
     process.exit(1);
   }
 }
+// --- machine-readable output and recording metadata -------------------------
+const emit = (event, data = {}) => {
+  if (opts.json) process.stdout.write(JSON.stringify({ event, ts: Date.now(), ...data }) + '\n');
+};
+if (opts.json) {
+  // keep stdout clean for NDJSON; human-facing logs go to stderr
+  console.log = (...a) => console.error(...a);
+}
+const meta = {
+  tool: 'vidcli',
+  argv: process.argv.slice(2),
+  platform: process.platform,
+  arch: process.arch,
+  fps: opts.fps,
+  started_at: null,
+  stopped_at: null,
+  target: null,
+  output: null,
+  raw: null,
+  redactions: null,
+  cursor_log: null,
+  click_log: null,
+};
+
 const timestamp = Date.now();
 const outputPath = opts.output
   ? path.resolve(opts.output)
   : path.resolve(process.cwd(), `vidcli-${timestamp}.mp4`);
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+if (fs.existsSync(outputPath)) {
+  if (!opts.overwrite) {
+    console.error(`Output already exists: ${outputPath}`);
+    console.error('Pass --overwrite to replace it, or choose another -o path.');
+    process.exit(2);
+  }
+  fs.rmSync(outputPath, { force: true });
+}
 
-const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop || (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || opts.autoRedact || opts.autoRedactAll;
+const needsPost = (opts.zoom && opts.zoom > 1) || !!opts.crop || (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || !!opts.redactText || opts.autoRedact || opts.autoRedactAll;
 const capturePath = needsPost
   ? path.join(path.dirname(outputPath), `.raw-${timestamp}.mp4`)
   : outputPath;
+meta.target = opts.window
+  ? { type: 'window', id: Number(opts.window), name: opts.windowName || null }
+  : { type: 'display', id: opts.display ? Number(opts.display) : 'primary' };
+meta.raw = needsPost ? capturePath : null;
 const cursorPath = path.join(path.dirname(outputPath), `.cursor-${timestamp}.jsonl`);
 const clickPath = path.join(path.dirname(outputPath), `.clicks-${timestamp}.jsonl`);
+const sysAudioPath = path.join(path.dirname(outputPath), `.sysaudio-${timestamp}.m4a`);
+const micAudioPath = path.join(path.dirname(outputPath), `.mic-${timestamp}.m4a`);
 
 function helperPath() {
   if (process.env.VIDCLI_HELPER || process.env.RECORDLY_HELPER) return process.env.VIDCLI_HELPER || process.env.RECORDLY_HELPER;
@@ -178,6 +235,8 @@ function ffmpegPath() {
 
 function buildMacConfig() {
   const cfg = { fps: opts.fps, outputPath: capturePath, capturesSystemAudio: opts.systemAudio, capturesMicrophone: opts.mic };
+  if (opts.systemAudio) cfg.systemAudioOutputPath = sysAudioPath;
+  if (opts.mic) cfg.microphoneOutputPath = micAudioPath;
   if (opts.window) {
     cfg.windowId = Number(opts.window);
   } else if (opts.display) {
@@ -205,8 +264,12 @@ function recordMac() {
   if (opts.autoZoom && opts.autoZoom > 1) {
     const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'cursor-log.py');
     cursorProc = spawn('python3', [script, cursorPath], { stdio: 'ignore' });
+    meta.cursor_log = cursorPath;
     const clickBin = ensureClickLogger();
-    if (clickBin) clickProc = spawn(clickBin, [clickPath], { stdio: 'ignore' });
+    if (clickBin) {
+      clickProc = spawn(clickBin, [clickPath], { stdio: 'ignore' });
+      meta.click_log = clickPath;
+    }
   }
 
   const p = spawn(hp, [cfg], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -223,11 +286,25 @@ function recordMac() {
   p.stdout.on('data', (d) => {
     const s = d.toString();
     buf += s;
-    process.stdout.write(s);
+    if (opts.json) process.stderr.write(s); else process.stdout.write(s);
     if (!started && buf.includes('Recording started')) {
       started = true;
+      meta.started_at = Date.now();
+      emit('capture.started', { output: capturePath, target: meta.target, fps: opts.fps });
       if (opts.duration && Number.isFinite(opts.duration) && opts.duration > 0) {
         setTimeout(stop, opts.duration * 1000);
+      }
+      if (opts.stopFile) {
+        const timer = setInterval(() => {
+          if (stopped) { clearInterval(timer); return; }
+          if (fs.existsSync(opts.stopFile)) {
+            clearInterval(timer);
+            console.log(`Stop file appeared (${opts.stopFile}); stopping.`);
+            emit('capture.stop_file', { path: opts.stopFile });
+            stop();
+          }
+        }, 200);
+        timer.unref?.();
       }
     }
     if (buf.includes('Recording stopped. Output path:')) {
@@ -240,6 +317,8 @@ function recordMac() {
   process.on('SIGTERM', () => stop());
 
   p.on('exit', (code) => {
+    meta.stopped_at = Date.now();
+    emit('capture.stopped', { code, path: capturePath });
     const m = buf.match(/Recording stopped\. Output path: (.+)/);
     const finalPath = m ? m[1].trim() : capturePath;
     if (cursorProc) { try { cursorProc.kill(); } catch {} }
@@ -286,8 +365,13 @@ function recordFfmpeg() {
   });
 }
 
+// Children that print progress must go to stderr when stdout carries NDJSON.
+function childStdio() {
+  return opts.json ? ['inherit', 'pipe', 'pipe'] : 'inherit';
+}
+
 function runPostProcess() {
-  const useAutozoom = (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || opts.autoRedact || opts.autoRedactAll;
+  const useAutozoom = (opts.autoZoom && opts.autoZoom > 1) || !!opts.redact || !!opts.redactText || opts.autoRedact || opts.autoRedactAll;
   if (useAutozoom) {
     return new Promise((resolve, reject) => {
       const script = path.join(path.dirname(new URL(import.meta.url).pathname), 'autozoom.py');
@@ -295,7 +379,13 @@ function runPostProcess() {
       const args = [script, capturePath, cursorPath, clickPath, String(zoomVal), outputPath];
       if (opts.redact) args.push(opts.redact); else args.push('');
       args.push(opts.autoRedactAll ? 'all' : (opts.autoRedact ? 'sensitive' : ''));
-      const p = spawn('python3', args, { stdio: 'inherit' });
+      args.push(opts.redactText || '');
+      args.push(String(opts.redactSample || 2));
+      const p = spawn('python3', args, { stdio: childStdio() });
+      if (opts.json) {
+        p.stdout.on('data', (d) => process.stderr.write(d));
+        p.stderr.on('data', (d) => process.stderr.write(d));
+      }
       p.on('exit', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`autozoom failed (exit ${code})`));
@@ -317,7 +407,11 @@ function runPostProcess() {
     if (filters.length) args.push('-vf', filters.join(','));
     args.push('-c:a', 'copy', outputPath);
     console.log(`Post-processing -> ${outputPath}`);
-    const p = spawn(ffmpeg, args, { stdio: 'inherit' });
+    const p = spawn(ffmpeg, args, { stdio: childStdio() });
+    if (opts.json) {
+      p.stdout.on('data', (d) => process.stderr.write(d));
+      p.stderr.on('data', (d) => process.stderr.write(d));
+    }
     p.on('exit', (code) => {
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg post-process failed (exit ${code})`));
@@ -369,10 +463,90 @@ function trimSilenceFile(inputPath, outputPath) {
   });
 }
 
+function ffprobePath() {
+  for (const c of ['ffprobe', '/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe', '/usr/bin/ffprobe']) {
+    const r = spawnSync(c, ['-version'], { stdio: 'ignore' });
+    if (!r.error && r.status === 0) return c;
+  }
+  return 'ffprobe';
+}
+
+function probeDuration(file) {
+  try {
+    const r = spawnSync(ffprobePath(), ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'csv=p=0', file], { encoding: 'utf8' });
+    return parseFloat((r.stdout || '').trim()) || null;
+  } catch { return null; }
+}
+
+function writeManifest() {
+  if (!opts.manifest) return null;
+  const manifestPath = outputPath.replace(/\.mp4$/i, '') + '.json';
+  meta.output = outputPath;
+  meta.duration_s = probeDuration(outputPath);
+  meta.requested_duration_s = opts.duration || null;
+  const cursorKept = fs.existsSync(cursorPath);
+  const clickKept = fs.existsSync(clickPath);
+  if (cursorKept) meta.cursor_log = cursorPath;
+  if (clickKept) meta.click_log = clickPath;
+  meta.telemetry_deleted = !opts.keepRaw && (!!meta.cursor_log || !!meta.click_log);
+  const redFile = outputPath + '.redactions.json';
+  if (fs.existsSync(redFile)) {
+    try { meta.redactions = JSON.parse(fs.readFileSync(redFile, 'utf8')); } catch { meta.redactions = null; }
+  } else if (opts.redactText || opts.autoRedact || opts.autoRedactAll || opts.redact) {
+    meta.redactions = { requested: { text: opts.redactText || null, auto: opts.autoRedactAll ? 'all' : (opts.autoRedact ? 'sensitive' : null), regions: opts.redact || null } };
+  }
+  try {
+    fs.writeFileSync(manifestPath, JSON.stringify(meta, null, 1));
+    emit('manifest.written', { path: manifestPath });
+    return manifestPath;
+  } catch (e) {
+    console.error('Failed to write manifest:', e.message);
+    return null;
+  }
+}
+
+// The native helper writes system audio and microphone to separate .m4a files.
+// Merge whatever was captured into the final MP4 (mixed to one track when both exist).
+function muxAudioSidecars() {
+  const have = [sysAudioPath, micAudioPath].filter((f) => fs.existsSync(f) && fs.statSync(f).size > 1024);
+  meta.audio = { system: have.includes(sysAudioPath), microphone: have.includes(micAudioPath) };
+  if (!have.length) {
+    // Microphone-only takes are written inline by the helper: report them from the file itself.
+    if (opts.mic && !opts.systemAudio && fs.existsSync(outputPath)) {
+      const pr = spawnSync(ffprobePath(), ['-v', 'error', '-select_streams', 'a', '-show_entries',
+        'stream=codec_name', '-of', 'csv=p=0', outputPath], { encoding: 'utf8' });
+      if ((pr.stdout || '').trim()) meta.audio.microphone = true;
+    }
+    return;
+  }
+  if (!fs.existsSync(outputPath)) return;
+  const tmp = outputPath + '.mux.mp4';
+  const inputs = ['-i', outputPath, ...have.flatMap((f) => ['-i', f])];
+  const args = ['-y', '-v', 'error', ...inputs, '-map', '0:v:0'];
+  if (have.length === 2) {
+    args.push('-filter_complex', '[1:a][2:a]amix=inputs=2:normalize=0[a]', '-map', '[a]');
+  } else {
+    args.push('-map', '1:a:0');
+  }
+  args.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', tmp);
+  const r = spawnSync(ffmpegPath(), args, { encoding: 'utf8' });
+  if (r.status === 0 && fs.existsSync(tmp)) {
+    fs.renameSync(tmp, outputPath);
+    console.log(`Muxed audio: ${meta.audio.system ? 'system ' : ''}${meta.audio.microphone ? 'microphone' : ''}`.trim());
+    emit('audio.muxed', meta.audio);
+  } else {
+    console.error('Audio mux failed:', (r.stderr || '').slice(0, 200));
+    meta.audio.error = 'mux_failed';
+  }
+  if (!opts.keepRaw) for (const f of have) fs.rmSync(f, { force: true });
+}
+
 function finish() {
   if (needsPost) {
     runPostProcess()
       .then(() => {
+        muxAudioSidecars();
         if (!opts.keepRaw) fs.rmSync(capturePath, { force: true });
         if (!opts.keepRaw) {
           fs.rmSync(cursorPath, { force: true });
@@ -382,6 +556,8 @@ function finish() {
       })
       .then(() => {
         console.log(`Final: ${outputPath}`);
+        const manifest = writeManifest();
+        emit('finished', { output: outputPath, manifest, duration_s: meta.duration_s });
         if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
         if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
@@ -391,15 +567,20 @@ function finish() {
         process.exit(1);
       });
   } else {
+    muxAudioSidecars();
     if (opts.trimSilence) {
       trimSilenceFile(outputPath, outputPath).then(() => {
         console.log(`Final: ${outputPath}`);
+        const manifest = writeManifest();
+        emit('finished', { output: outputPath, manifest, duration_s: meta.duration_s });
         if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
         if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
       }).catch((e) => { console.error(e.message); process.exit(1); });
     } else {
       console.log(`Final: ${outputPath}`);
+      const manifest = writeManifest();
+      emit('finished', { output: outputPath, manifest, duration_s: meta.duration_s });
       if (opts.printMedia) console.log(`MEDIA:${outputPath}`);
       if (opts.open) spawn('open', [outputPath], { detached: true, stdio: 'ignore' }).unref();
       process.exit(0);

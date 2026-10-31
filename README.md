@@ -26,13 +26,37 @@ npm run record -- --auto-zoom 2 --duration 60 -o out.mp4
 npm run record -- --help
 ```
 
-Options: `-o/--output`, `-d/--duration`, `--display`, `--window`, `--fps`,
-`--system-audio`, `--mic`, `--zoom`, `--auto-zoom`, `--crop`, `--open`,
-`--keep-raw`.
+Options: `-o/--output`, `-d/--duration`, `--display`, `--window`, `--window-name`,
+`--fps`, `--system-audio`, `--mic`, `--zoom`, `--auto-zoom`, `--crop`, `--open`,
+`--keep-raw`, `--redact`, `--redact-text`, `--redact-sample`, `--stop-file`,
+`--json`, `--no-manifest`, `--trim-silence`, `--print-media`.
 
 macOS uses the bundled ScreenCaptureKit helper; other platforms fall back to ffmpeg.
 Auto-zoom post-processing (`cli/autozoom.py`) follows cursor telemetry and clicks.
-Use `--redact "x,y,w,h"` (semicolon for multiple) to blur sensitive regions (email fields, forms).
+
+Redaction: `--redact "x,y,w,h"` blurs fixed regions (semicolon for multiple);
+`--redact-text "username,/Users/"` OCRs sampled frames and blurs any text containing
+those words, following the text for the time it is on screen. `--redact-sample <sec>`
+sets the OCR interval (default 2 s).
+
+For scripts and agents: `--stop-file <path>` stops the take when that file appears,
+`--json` emits NDJSON events on stdout (`capture.started`, `capture.stopped`,
+`manifest.written`, `finished`) with human logs on stderr, and every take writes
+`<output>.json` — capture start/stop epoch, target, fps, duration and the redaction
+report — so a post-processor can sync to the video without guessing an offset.
+`--overwrite` replaces an existing output; without it an existing file is refused.
+
+Audio: `--system-audio` captures what the Mac plays and `--mic` the microphone. The native helper writes
+each to its own `.m4a`; the CLI merges them into the MP4 (mixed to one track if both) and reports
+`audio.muxed` plus `audio: {system, microphone}` in the manifest. System audio needs only the Screen
+Recording permission VidCLI already has; `--mic` needs macOS microphone permission (on first use macOS asks; here it was already granted).
+
+End-to-end check (records real takes of a Preview board and asserts the artefacts):
+`npm run test:e2e:cli` — 35 checks covering duration, manifest anchor, `--redact-text`
+(blur + text still unreadable + neighbouring text untouched), `--window-name`,
+auto-zoom with redaction, `--auto-redact`, static `--redact`, `--no-manifest`,
+`--stop-file`, NDJSON cleanliness, and system audio (an 880 Hz tone must arrive at 880 Hz,
+on time, also through auto-zoom + redaction), `--mic`, and `--mic` + `--system-audio` mixed to one track).
 
 
 <img width="1280" height="720" alt="MP4 to GIF export (4)" src="https://github.com/user-attachments/assets/e6d68606-5fc0-4f70-99cd-7521982dc13b" />

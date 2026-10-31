@@ -48,7 +48,8 @@
     "test:ui": "playwright test",
     "dev:ui": "vite --mode ui --host 127.0.0.1",
     "record": "node cli/record.mjs",
-    "record:mac": "node cli/record.mjs"
+    "record:mac": "node cli/record.mjs",
+    "test:e2e:cli": "python3 cli/e2e.py"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
